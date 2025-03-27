@@ -195,7 +195,7 @@ def sign_up_account(browser, tab, account_info):
         return "SIGNUP_RESTRICTED"
 
     # 创建邮件处理器
-    email_handler = EmailVerificationHandler()
+    email_handler = EmailVerificationHandler(account_info)
     i = 0
     while i < 5:
         try:

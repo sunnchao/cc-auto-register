@@ -1,6 +1,5 @@
 import os
 from dotenv import load_dotenv
-import logging
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -37,9 +36,15 @@ REGISTRATION_RETRY_INTERVAL = int(os.getenv("REGISTRATION_RETRY_INTERVAL", 5))
 # 是否以无头模式运行浏览器（不显示界面）
 BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
 # 浏览器可执行文件路径（为空则使用默认路径）
-BROWSER_EXECUTABLE_PATH = os.getenv("BROWSER_EXECUTABLE_PATH", None)
+BROWSER_PATH = os.getenv("BROWSER_PATH", None)
 # 浏览器下载文件保存路径
 BROWSER_DOWNLOAD_PATH = os.getenv("BROWSER_DOWNLOAD_PATH", None)
+# 是否使用动态ua池
+DYNAMIC_USERAGENT = os.getenv("DYNAMIC_USERAGENT", "false").lower() == "true"
+# 浏览器代理
+BROWSER_PROXY = os.getenv("BROWSER_PROXY", None)
+# 浏览器User-Agent
+BROWSER_USER_AGENT = os.getenv("BROWSER_USER_AGENT", None)
 
 # ===== Cursor URL配置 =====
 # Cursor登录页面URL
@@ -51,13 +56,15 @@ SETTINGS_URL = "https://www.cursor.com/settings"
 
 # ===== 邮箱配置 =====
 # 临时邮箱用户名
-EMAIL_USERNAME = os.getenv("EMAIL_USERNAME", "ddcat666")
+EMAIL_USERNAME = os.getenv("EMAIL_USERNAME", "xxx")
 # 临时邮箱域名
 EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "mailto.plus")
 # 临时邮箱PIN码（如果需要）
 EMAIL_PIN = os.getenv("EMAIL_PIN", "")
 # 可用于注册的邮箱域名列表（逗号分隔）
-EMAIL_DOMAINS = [domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "ddcat.store").split(",")]
+EMAIL_DOMAINS = [
+    domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",")
+]
 # 邮件验证码获取最大重试次数
 EMAIL_VERIFICATION_RETRIES = int(os.getenv("EMAIL_VERIFICATION_RETRIES", 5))
 # 邮件验证码获取重试间隔(秒)
@@ -65,7 +72,7 @@ EMAIL_VERIFICATION_WAIT = int(os.getenv("EMAIL_VERIFICATION_WAIT", 5))
 
 # ===== 数据库配置 =====
 # 数据库连接URL，默认使用SQLite
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/accounts.db") 
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/accounts.db")
 
 # ===== Cursor main.js 配置 =====
 # Cursor 主文件路径

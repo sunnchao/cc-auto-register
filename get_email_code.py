@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+from logger import info, error
 import time
 import re
 from email_config import EmailConfig
@@ -8,6 +9,14 @@ import email
 import imaplib
 import poplib
 from email.parser import Parser
+
+from config import (
+    EMAIL_USERNAME,
+    EMAIL_DOMAIN,
+    EMAIL_PIN,
+    EMAIL_VERIFICATION_RETRIES,
+    EMAIL_VERIFICATION_WAIT,
+)
 
 
 class EmailVerificationHandler:
@@ -20,19 +29,27 @@ class EmailVerificationHandler:
         # 获取协议类型，默认为 POP3
         self.protocol = EmailConfig().get_protocol() or 'POP3'
         self.account = account
+        info(
+            f"初始化邮箱验证器成功: {self.username}{self.emailExtension} pin: {self.pin}"
+        )
 
-    def get_verification_code(self, max_retries=5, retry_interval=60):
+    def get_verification_code(
+        self, source_email=None, max_retries=None, wait_time=None
+    ):
         """
-        获取验证码，带有重试机制。
+        获取验证码，增加了重试机制
 
         Args:
-            max_retries: 最大重试次数。
-            retry_interval: 重试间隔时间（秒）。
+            max_retries: 最大重试次数
+            wait_time: 每次重试间隔时间(秒)
 
         Returns:
             验证码 (字符串或 None)。
         """
 
+        max_retries = max_retries or EMAIL_VERIFICATION_RETRIES
+        wait_time = wait_time or EMAIL_VERIFICATION_WAIT
+        info(f"开始获取邮箱验证码=>最大重试次数:{max_retries}, 等待时间:{wait_time}")
         for attempt in range(max_retries):
             try:
                 logging.info(f"尝试获取验证码 (第 {attempt + 1}/{max_retries} 次)...")
@@ -79,7 +96,7 @@ class EmailVerificationHandler:
             print('登录成功')
             search_by_date=False
             # 针对网易系邮箱，imap登录后需要附带联系信息，且后续邮件搜索逻辑更改为获取当天的未读邮件
-            if self.imap['imap_user'].endswith(('@163.com', '@126.com', '@yeah.net')):                
+            if self.imap['imap_user'].endswith(('@163.com', '@126.com', '@yeah.net')):
                 imap_id = ("name", self.imap['imap_user'].split('@')[0], "contact", self.imap['imap_user'], "version", "1.0.0", "vendor", "imaplib")
                 mail.xatom('ID', '("' + '" "'.join(imap_id) + '")')
                 search_by_date=True
@@ -154,21 +171,21 @@ class EmailVerificationHandler:
             time.sleep(3)
         if retry >= 20:
             raise Exception("获取验证码超时")
-        
+
         pop3 = None
         try:
             # 连接到服务器
             pop3 = poplib.POP3_SSL(self.imap['imap_server'], int(self.imap['imap_port']))
             pop3.user(self.imap['imap_user'])
             pop3.pass_(self.imap['imap_pass'])
-            
+
             # 获取最新的10封邮件
             num_messages = len(pop3.list()[1])
             for i in range(num_messages, max(1, num_messages-9), -1):
                 response, lines, octets = pop3.retr(i)
                 msg_content = b'\r\n'.join(lines).decode('utf-8')
                 msg = Parser().parsestr(msg_content)
-                
+
                 # 检查发件人
                 if 'no-reply@cursor.sh' in msg.get('From', ''):
                     # 提取邮件正文
@@ -180,10 +197,10 @@ class EmailVerificationHandler:
                             code = code_match.group()
                             pop3.quit()
                             return code
-            
+
             pop3.quit()
             return self._get_mail_code_by_pop3(retry=retry + 1)
-            
+
         except Exception as e:
             print(f"发生错误: {e}")
             if pop3:
@@ -192,6 +209,22 @@ class EmailVerificationHandler:
                 except:
                     pass
             return None
+                code, mail_id = self._get_latest_mail_code(source_email)
+                if code:
+                    info(f"成功获取验证码: {code}")
+                    return code
+                if attempt < max_retries - 1:
+                    info(
+                        f"未找到验证码，{wait_time}秒后重试 ({attempt + 1}/{max_retries})..."
+                    )
+                    time.sleep(wait_time)
+            except Exception as e:
+                error(f"获取验证码失败: {str(e)}")
+                if attempt < max_retries - 1:
+                    info(f"将在{wait_time}秒后重试...")
+                    time.sleep(wait_time)
+
+        return None
 
     def _extract_pop3_body(self, email_message):
         # 提取邮件正文
@@ -214,13 +247,31 @@ class EmailVerificationHandler:
         return ""
 
     # 手动输入验证码
-    def _get_latest_mail_code(self):
+    def _get_latest_mail_code(self, source_email=None):
+        info("开始获取邮件列表")
         # 获取邮件列表
         mail_list_url = f"https://tempmail.plus/api/mails?email={self.username}{self.emailExtension}&limit=20&epin={self.epin}"
         mail_list_response = self.session.get(mail_list_url)
         mail_list_data = mail_list_response.json()
         time.sleep(0.5)
         if not mail_list_data.get("result"):
+        mail_list_url = f"https://tempmail.plus/api/mails?email={self.username}{self.emailExtension}&limit=20&epin={self.pin}"
+        try:
+            mail_list_response = self.session.get(
+                mail_list_url, timeout=10
+            )  # 添加超时参数
+            mail_list_data = mail_list_response.json()
+            time.sleep(0.5)
+            if not mail_list_data.get("result"):
+                return None, None
+        except requests.exceptions.Timeout:
+            error("获取邮件列表超时")
+            return None, None
+        except requests.exceptions.ConnectionError:
+            error("获取邮件列表连接错误")
+            return None, None
+        except Exception as e:
+            error(f"获取邮件列表发生错误: {str(e)}")
             return None, None
 
         # 获取最新邮件的ID
@@ -234,6 +285,23 @@ class EmailVerificationHandler:
         mail_detail_data = mail_detail_response.json()
         time.sleep(0.5)
         if not mail_detail_data.get("result"):
+        mail_detail_url = f"https://tempmail.plus/api/mails/{first_id}?email={self.username}{self.emailExtension}&epin={self.pin}"
+        try:
+            mail_detail_response = self.session.get(
+                mail_detail_url, timeout=10
+            )  # 添加超时参数
+            mail_detail_data = mail_detail_response.json()
+            time.sleep(0.5)
+            if not mail_detail_data.get("result"):
+                return None, None
+        except requests.exceptions.Timeout:
+            error("获取邮件详情超时")
+            return None, None
+        except requests.exceptions.ConnectionError:
+            error("获取邮件详情连接错误")
+            return None, None
+        except Exception as e:
+            error(f"获取邮件详情发生错误: {str(e)}")
             return None, None
 
         # 从邮件文本中提取6位数字验证码
@@ -241,6 +309,13 @@ class EmailVerificationHandler:
         mail_subject = mail_detail_data.get("subject", "")
         logging.info(f"找到邮件主题: {mail_subject}")
         # 修改正则表达式，确保 6 位数字不紧跟在字母或域名相关符号后面
+
+        # 如果提供了source_email，确保邮件内容中包含该邮箱地址
+        if source_email and source_email.lower() not in mail_text.lower():
+            error(f"邮件内容不包含指定的邮箱地址: {source_email}")
+        else:
+            info(f"邮件内容包含指定的邮箱地址: {source_email}")
+
         code_match = re.search(r"(?<![a-zA-Z@.])\b\d{6}\b", mail_text)
 
         if code_match:

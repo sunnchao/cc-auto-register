@@ -94,7 +94,7 @@ class EmailVerificationHandler:
             mail = imaplib.IMAP4_SSL(self.imap['imap_server'], self.imap['imap_port'])
             mail.login(self.imap['imap_user'], self.imap['imap_pass'])
             print('登录成功')
-            search_by_date=False
+            search_by_date=True
             # 针对网易系邮箱，imap登录后需要附带联系信息，且后续邮件搜索逻辑更改为获取当天的未读邮件
             if self.imap['imap_user'].endswith(('@163.com', '@126.com', '@yeah.net')):
                 imap_id = ("name", self.imap['imap_user'].split('@')[0], "contact", self.imap['imap_user'], "version", "1.0.0", "vendor", "imaplib")
@@ -108,6 +108,8 @@ class EmailVerificationHandler:
                 status, messages = mail.search(None, 'TO', '"'+self.account+'"')
             if status != 'OK':
                 return None
+
+            print(f"查到的邮件信息 status = ${status}, messages = ${messages}")
 
             mail_ids = messages[0].split()
             if not mail_ids:

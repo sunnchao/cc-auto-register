@@ -67,18 +67,102 @@ function bindEventHandlers() {
     // 可以添加更多事件绑定...
 
     // 在bindEventHandlers函数中添加配置相关事件
-    $("#edit-config-btn").click(function() {
+    $("#edit-config-btn").click(function(e) {
+        e.preventDefault(); // 明确阻止任何默认行为
+        console.log("点击编辑配置按钮");
         enableConfigForm(true);
     });
 
-    $("#cancel-config-btn").click(function() {
+    $("#cancel-config-btn").click(function(e) {
+        e.preventDefault();
+        console.log("取消编辑配置");
         enableConfigForm(false);
-        loadConfig(); // 重新加载配置
+        loadConfig(); // 重新加载原始配置
     });
 
     $("#config-form").submit(function(e) {
+        console.log("click config-form submit");
         e.preventDefault();
         saveConfig();
+    });
+
+    // 代理设置切换事件
+    $("#use-proxy").change(function() {
+        toggleProxySettings();
+    });
+
+    // 重启服务按钮事件
+    $("#restart-service-btn").click(function() {
+        showConfirmDialog(
+            '重启服务', 
+            '确定要重启服务吗？重启过程可能需要几秒钟，期间服务将不可用。',
+            function() {
+                restartService();
+            }
+        );
+    });
+
+    // 重置机器ID按钮事件
+    $("#reset-machine-btn").click(function() {
+        showConfirmDialog(
+            '重置机器ID', 
+            '确定要重置机器ID吗？这将解除当前设备的绑定限制，但可能需要重新登录所有账号。',
+            function() {
+                resetMachineId();
+            }
+        );
+    });
+
+    // 导出账号按钮点击事件
+    $("#export-accounts-btn").click(function() {
+        exportAccounts();
+    });
+    
+    // 导入账号按钮点击事件
+    $("#import-accounts-btn").click(function() {
+        $("#import-file-input").click();
+    });
+    
+    // 导入文件选择事件
+    $("#import-file-input").change(function(e) {
+        if (e.target.files.length > 0) {
+            const file = e.target.files[0];
+            
+            // 读取文件预览内容
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                try {
+                    const data = JSON.parse(event.target.result);
+                    
+                    if (Array.isArray(data)) {
+                        // 显示导入确认对话框
+                        $("#import-count").text(data.length);
+                        const importModal = new bootstrap.Modal(document.getElementById('import-confirm-modal'));
+                        importModal.show();
+                        
+                        // 存储文件引用，用于后续导入
+                        window.fileToImport = file;
+                    } else {
+                        showAlert('danger', '无效的数据格式：必须是账号对象的数组');
+                    }
+                } catch (err) {
+                    showAlert('danger', '解析JSON文件失败：' + err.message);
+                }
+                
+                // 重置文件输入，允许再次选择同一文件
+                $("#import-file-input").val('');
+            };
+            
+            reader.readAsText(file);
+        }
+    });
+    
+    // 确认导入按钮点击事件
+    $("#confirm-import-btn").click(function() {
+        if (window.fileToImport) {
+            importAccounts(window.fileToImport);
+            bootstrap.Modal.getInstance(document.getElementById('import-confirm-modal')).hide();
+        }
     });
 }
 
@@ -88,9 +172,10 @@ let filteredAccounts = [];
 let refreshTimer;
 
 // 显示加载遮罩
-function showLoading() {
+function showLoading(message = '加载中，请稍候...') {
     const loadingOverlay = document.getElementById('loading-overlay');
     loadingOverlay.classList.add('show');
+    $("#loading-overlay p").text(message);
 }
 
 // 隐藏加载遮罩
@@ -589,13 +674,7 @@ function startTaskManually() {
         hideLoading();
         if (data.success) {
             showAlert('定时任务已成功启动', 'success');
-            
-            // 立即更新任务状态 - 添加这段代码
-            fetch('/registration/status')
-                .then(res => res.json())
-                .then(statusData => {
-                    updateTaskStatusUI(statusData);
-                });
+            checkTaskStatus();
         } else {
             showAlert(`启动任务失败: ${data.message || '未知错误'}`, 'danger');
         }
@@ -1076,17 +1155,28 @@ function renderTokenColumn(token, accountId) {
 // 加载配置函数
 function loadConfig() {
     showLoading();
-    fetch('/config')
-        .then(res => res.json())
-        .then(data => {
-            hideLoading();
-            if (data.success) {
-                const config = data.data;
-                $("#browser-headless").val(config.BROWSER_HEADLESS.toString());
-                $("#dynamic-useragent").prop('checked', config.DYNAMIC_USERAGENT || false);
+    $.ajax({
+        url: '/config',
+        method: 'GET',
+        success: function(response) {
+            if (response.success) {
+                const config = response.data;
+                
+                // 现有字段设置...
+                
+                // 设置代理配置
+                $("#use-proxy").prop("checked", config.USE_PROXY === "True");
+                $("#proxy-type").val(config.PROXY_TYPE || "http");
+                $("#proxy-host").val(config.PROXY_HOST || "");
+                $("#proxy-port").val(config.PROXY_PORT || "");
+                $("#proxy-timeout").val(config.PROXY_TIMEOUT || "10");
+                $("#proxy-username").val(config.PROXY_USERNAME || "");
+                $("#proxy-password").val(config.PROXY_PASSWORD || "");
                 
                 // 触发动态UA的change事件
                 $("#dynamic-useragent").trigger('change');
+                // 根据是否启用代理来显示/隐藏代理设置
+                toggleProxySettings();
                 
                 $("#browser-useragent").val(config.BROWSER_USER_AGENT);
                 $("#accounts-limit").val(config.MAX_ACCOUNTS);
@@ -1095,23 +1185,64 @@ function loadConfig() {
                 $("#email-pin").val(config.EMAIL_PIN);
                 $("#browser-path").val(config.BROWSER_PATH || '');
                 $("#cursor-path").val(config.CURSOR_PATH || '');
+
+                if (config.EMAIL_DOMAIN) {
+                    // 获取第一个域名作为示例
+                    const firstDomain = config.EMAIL_DOMAIN;
+                    // 更新输入框提示
+                    $('#email-username').attr('placeholder', `仅输入用户名部分，例如：ddcat28（完整地址将是 ddcat28@${firstDomain}）`);
+                    // 添加域名显示标签
+                    if (!$('#email-domain-suffix').length) {
+                        $('#email-username').after(`<span id="email-domain-suffix" class="input-group-text bg-light">@${firstDomain}</span>`);
+                        // 将输入框和域名标签包装在input-group中
+                        $('#email-username, #email-domain-suffix').wrapAll('<div class="input-group"></div>');
+                    } else {
+                        $('#email-domain-suffix').text(`@${firstDomain}`);
+                    }
+                }
+                
+                $("#email-type").val(config.EMAIL_TYPE);
+                $("#email-proxy-enabled").prop('checked', config.EMAIL_PROXY_ENABLED || false);
+                if (config.EMAIL_PROXY_ENABLED) {
+                    $("#email-proxy-address").val(config.EMAIL_PROXY_ADDRESS);
+                    $("#email-api").val(config.EMAIL_API);
+                }
+                if (config.EMAIL_TYPE == "tempemail") {
+                    $("#tempemail-fields").show();
+                    $("#zmail-fields").hide();
+                } else if (config.EMAIL_TYPE == "zmail") {
+                    $("#tempemail-fields").hide();
+                    $("#zmail-fields").show();
+                }
+                
+                hideLoading();
+
             } else {
-                showAlert(`加载配置失败: ${data.message || '未知错误'}`, 'danger');
+                showAlert('danger', '加载配置失败: ' + response.message);
+                hideLoading();
             }
-        })
-        .catch(error => {
-            console.error('加载配置时发生错误:', error);
+        },
+        error: function(xhr) {
             hideLoading();
-            showAlert('加载配置失败，请稍后重试', 'danger');
-        });
+            showAlert('danger', '加载配置失败: ' + xhr.statusText);
+        }
+    });
 }
 
-// 保存配置函数
+// 添加代理设置的显示/隐藏控制
+function toggleProxySettings() {
+    if ($("#use-proxy").is(":checked")) {
+        $("#proxy-settings").show();
+    } else {
+        $("#proxy-settings").hide();
+    }
+}
+
+// 添加配置保存回调，支持重启
 function saveConfig() {
     showLoading();
-    const isDynamicUA = $("#dynamic-useragent").prop('checked');
-    
-    const config = {
+    const isDynamicUA = $(this).prop('checked');
+    const configData = {
         BROWSER_HEADLESS: $("#browser-headless").val() === 'true',
         DYNAMIC_USERAGENT: isDynamicUA,
         BROWSER_USER_AGENT: isDynamicUA ? "" : $("#browser-useragent").val(),
@@ -1120,30 +1251,115 @@ function saveConfig() {
         EMAIL_USERNAME: $("#email-username").val(),
         EMAIL_PIN: $("#email-pin").val(),
         BROWSER_PATH: $("#browser-path").val(),
-        CURSOR_PATH: $("#cursor-path").val()
+        CURSOR_PATH: $("#cursor-path").val(),
+        // 代理设置（确保这些字段存在）
+        USE_PROXY: $("#use-proxy").is(":checked"),
+        PROXY_TYPE: $("#proxy-type").val(),
+        PROXY_HOST: $("#proxy-host").val(),
+        PROXY_PORT: $("#proxy-port").val(),
+        PROXY_TIMEOUT: parseInt($("#proxy-timeout").val()) || 10,
+        PROXY_USERNAME: $("#proxy-username").val(),
+        PROXY_PASSWORD: $("#proxy-password").val()
     };
     
-    fetch('/config', {
-        method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
+    $.ajax({
+        url: '/config',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(configData),
+        success: function(response) {
+            hideLoading();
+            if (response.success) {
+                // 添加重启询问提示
+                showConfirmDialog(
+                    '配置已成功保存', 
+                    '需要重启服务才能使更改生效。是否立即重启服务？',
+                    function() {
+                        // 确认重启
+                        restartService();
+                    }
+                );
+                enableConfigForm(false);
+            } else {
+                showAlert('danger', '保存配置失败: ' + response.message);
+            }
         },
-        body: JSON.stringify(config)
-    })
-    .then(res => res.json())
-    .then(data => {
-        hideLoading();
-        if (data.success) {
-            showAlert('配置已成功保存', 'success');
-            enableConfigForm(false); // 禁用编辑状态
-        } else {
-            showAlert(`保存配置失败: ${data.message || '未知错误'}`, 'danger');
+        error: function(xhr) {
+            hideLoading();
+            showAlert('danger', '保存配置失败: ' + xhr.statusText);
         }
-    })
-    .catch(error => {
-        console.error('保存配置时发生错误:', error);
-        hideLoading();
-        showAlert('保存配置失败，请稍后重试', 'danger');
+    });
+}
+
+// 添加确认对话框函数
+function showConfirmDialog(title, message, confirmCallback) {
+    // 如果已存在对话框，先移除
+    if ($("#confirm-dialog").length) {
+        $("#confirm-dialog").remove();
+    }
+    
+    const dialogHTML = `
+        <div class="modal fade" id="confirm-dialog" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">${title}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">${message}</div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary" id="confirm-yes">确认</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    $('body').append(dialogHTML);
+    
+    const modal = new bootstrap.Modal(document.getElementById('confirm-dialog'));
+    modal.show();
+    
+    $("#confirm-yes").click(function() {
+        modal.hide();
+        if (typeof confirmCallback === 'function') {
+            confirmCallback();
+        }
+    });
+}
+
+// 更新重启服务函数
+function restartService() {
+    showLoading('服务正在重新配置，请稍候...');
+    
+    $.ajax({
+        url: '/restart',
+        method: 'POST',
+        success: function(response) {
+            if (response.success) {
+                // 显示成功消息
+                hideLoading();
+                showAlert('success', response.message || '服务配置已更新，正在刷新页面...');
+                
+                // 延迟3秒后刷新页面
+                setTimeout(function() {
+                    window.location.reload();
+                }, 3000);
+            } else {
+                hideLoading();
+                showAlert('danger', '重启服务失败: ' + (response.message || '未知错误'));
+            }
+        },
+        error: function(xhr) {
+            hideLoading();
+            showAlert('danger', '重启服务请求失败，请手动刷新页面');
+            
+            // 延迟5秒后尝试刷新页面
+            setTimeout(function() {
+                window.location.reload();
+            }, 5000);
+        }
     });
 }
 
@@ -1394,4 +1610,87 @@ function formatTimeLeft(seconds) {
         const minutes = Math.floor((seconds % 3600) / 60);
         return `${hours}小时${minutes}分`;
     }
+}
+
+// 添加重置机器ID函数
+function resetMachineId() {
+    showLoading();
+    
+    $.ajax({
+        url: '/reset-machine',
+        method: 'GET',
+        success: function(response) {
+            hideLoading();
+            if (response.success) {
+                showAlert('success', '成功重置机器ID。' + (response.message || ''));
+                
+                // 询问是否需要重启服务以应用更改
+                setTimeout(function() {
+                    showConfirmDialog(
+                        '重启服务', 
+                        '机器ID已重置，建议重启服务以确保更改生效。是否立即重启？',
+                        function() {
+                            restartService();
+                        }
+                    );
+                }, 1000);
+            } else {
+                showAlert('danger', '重置机器ID失败: ' + (response.message || '未知错误'));
+            }
+        },
+        error: function(xhr) {
+            hideLoading();
+            showAlert('danger', '重置机器ID失败: ' + (xhr.responseJSON?.message || xhr.statusText || '未知错误'));
+        }
+    });
+}
+
+// 导出账号函数
+function exportAccounts() {
+    showLoading();
+    
+    // 直接使用浏览器下载功能
+    const downloadLink = document.createElement('a');
+    downloadLink.href = '/accounts/export';
+    downloadLink.download = 'cursor_accounts.json';
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    
+    setTimeout(() => {
+        hideLoading();
+        showAlert('success', '账号导出请求已发送，文件将自动下载');
+    }, 1000);
+}
+
+// 导入账号函数
+function importAccounts(file) {
+    showLoading();
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    // 发送导入请求
+    $.ajax({
+        url: '/accounts/import',
+        method: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        success: function(response) {
+            hideLoading();
+            if (response.success) {
+                showAlert('success', response.message);
+                
+                // 刷新账号列表
+                loadAccounts(1, itemsPerPage);
+            } else {
+                showAlert('danger', '导入账号失败: ' + response.message);
+            }
+        },
+        error: function(xhr) {
+            hideLoading();
+            showAlert('danger', '导入账号失败: ' + (xhr.responseJSON?.detail || xhr.statusText));
+        }
+    });
 }

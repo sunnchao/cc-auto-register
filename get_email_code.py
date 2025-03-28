@@ -16,23 +16,30 @@ from config import (
     EMAIL_PIN,
     EMAIL_VERIFICATION_RETRIES,
     EMAIL_VERIFICATION_WAIT,
+    EMAIL_TYPE,
+    EMAIL_PROXY_ADDRESS,
+    EMAIL_PROXY_ENABLED,
+    EMAIL_API
 )
 
 
 class EmailVerificationHandler:
-    def __init__(self,account):
-        self.imap = EmailConfig().get_imap()
-        self.username = EmailConfig().get_temp_mail()
-        self.epin = EmailConfig().get_temp_mail_epin()
+    def __init__(self, username=None, domain=None, pin=None):
+        self.email = EMAIL_TYPE
+        self.username = username or EMAIL_USERNAME
+        self.domain = domain or EMAIL_DOMAIN
         self.session = requests.Session()
-        self.emailExtension = EmailConfig().get_temp_mail_ext()
-        # 获取协议类型，默认为 POP3
-        self.protocol = EmailConfig().get_protocol() or 'POP3'
-        self.account = account
-        info(
-            f"初始化邮箱验证器成功: {self.username}{self.emailExtension} pin: {self.pin}"
-        )
-
+        self.emailApi = EMAIL_API
+        self.emailExtension = f"@{self.domain}"
+        self.pin = pin or EMAIL_PIN
+        if self.email == "tempemail":
+            info(
+                f"初始化邮箱验证器成功: {self.username}{self.emailExtension} pin: {self.pin}"
+            )
+        elif self.email == "zmail":
+            info(
+                f"初始化邮箱验证器成功: {self.emailApi}"
+            )
     def get_verification_code(
         self, source_email=None, max_retries=None, wait_time=None
     ):
@@ -55,7 +62,7 @@ class EmailVerificationHandler:
                 logging.info(f"尝试获取验证码 (第 {attempt + 1}/{max_retries} 次)...")
 
                 if not self.imap:
-                    verify_code, first_id = self._get_latest_mail_code()
+                    verify_code, first_id = self.get_zmail_email_code(source_email)
                     if verify_code is not None and first_id is not None:
                         self._cleanup_mail(first_id)
                         return verify_code
@@ -68,14 +75,14 @@ class EmailVerificationHandler:
                         return verify_code
 
                 if attempt < max_retries - 1:  # 除了最后一次尝试，都等待
-                    logging.warning(f"未获取到验证码，{retry_interval} 秒后重试...")
-                    time.sleep(retry_interval)
+                    logging.warning(f"未获取到验证码，{wait_time} 秒后重试...")
+                    time.sleep(wait_time)
 
             except Exception as e:
                 logging.error(f"获取验证码失败: {e}")  # 记录更一般的异常
                 if attempt < max_retries - 1:
-                    logging.error(f"发生错误，{retry_interval} 秒后重试...")
-                    time.sleep(retry_interval)
+                    logging.error(f"发生错误，{wait_time} 秒后重试...")
+                    time.sleep(wait_time)
                 else:
                     raise Exception(f"获取验证码失败且已达最大重试次数: {e}") from e
 
@@ -211,7 +218,7 @@ class EmailVerificationHandler:
                 except:
                     pass
             return None
-                code, mail_id = self._get_latest_mail_code(source_email)
+                code, mail_id = self.get_zmail_email_code(source_email)
                 if code:
                     info(f"成功获取验证码: {code}")
                     return code
@@ -249,7 +256,7 @@ class EmailVerificationHandler:
         return ""
 
     # 手动输入验证码
-    def _get_latest_mail_code(self, source_email=None):
+    def get_zmail_email_code(self, source_email=None):
         info("开始获取邮件列表")
         # 获取邮件列表
         mail_list_url = f"https://tempmail.plus/api/mails?email={self.username}{self.emailExtension}&limit=20&epin={self.epin}"
@@ -257,7 +264,7 @@ class EmailVerificationHandler:
         mail_list_data = mail_list_response.json()
         time.sleep(0.5)
         if not mail_list_data.get("result"):
-        mail_list_url = f"https://tempmail.plus/api/mails?email={self.username}{self.emailExtension}&limit=20&epin={self.pin}"
+            mail_list_url = f"https://tempmail.plus/api/mails?email={self.username}{self.emailExtension}&limit=20&epin={self.pin}"
         try:
             mail_list_response = self.session.get(
                 mail_list_url, timeout=10
@@ -287,7 +294,7 @@ class EmailVerificationHandler:
         mail_detail_data = mail_detail_response.json()
         time.sleep(0.5)
         if not mail_detail_data.get("result"):
-        mail_detail_url = f"https://tempmail.plus/api/mails/{first_id}?email={self.username}{self.emailExtension}&epin={self.pin}"
+            mail_detail_url = f"https://tempmail.plus/api/mails/{first_id}?email={self.username}{self.emailExtension}&epin={self.pin}"
         try:
             mail_detail_response = self.session.get(
                 mail_detail_url, timeout=10
@@ -350,6 +357,118 @@ class EmailVerificationHandler:
 
         return False
 
+    # 如果是zmail 需要先创建邮箱
+    def create_zmail_email(account_info):
+        # 如果邮箱类型是zmail 需要先创建邮箱
+        session = requests.Session()
+        if EMAIL_PROXY_ENABLED:
+            proxy = {
+                "http": f"{EMAIL_PROXY_ADDRESS}",
+                "https": f"{EMAIL_PROXY_ADDRESS}",
+            }
+            session.proxies.update(proxy)
+        # 创建临时邮箱URL
+        create_url = f"{EMAIL_API}/api/mailboxes"
+        username = account_info["email"].split("@")[0]
+        # 生成临时邮箱地址
+        payload = {
+            "address": f"{username}",
+            "expiresInHours": 24,
+        }
+        # 发送POST请求创建临时邮箱
+        try:
+            create_response = session.post(
+                create_url, json=payload, timeout=100
+            )  # 添加超时参数
+            info(f"创建临时邮箱成功: {create_response.status_code}")
+            create_data = create_response.json()
+            info(f"创建临时邮箱返回数据: {create_data}")
+            # 检查创建邮箱是否成功
+            time.sleep(0.5)
+            if create_data.get("success") is True or create_data.get('error') == '邮箱地址已存在':
+                info(f"邮箱创建成功: {create_data}")
+            else:
+                error(f"邮箱创建失败: {create_data}")
+                return None, None
+        except requests.exceptions.Timeout:
+            error("创建临时邮箱超时", create_url)
+            return None, None
+        info(f"创建临时邮箱成功: {create_data}, 返回值: {create_data}")
+    
+        # 获取zmail邮箱验证码
+    def get_zmail_email_code(self, source_email=None):
+        info("开始获取邮件列表")
+        # 获取邮件列表
+        username = source_email.split("@")[0]
+        mail_list_url = f"{EMAIL_API}/api/mailboxes/{username}/emails"
+        proxy = {
+            "http": f"{EMAIL_PROXY_ADDRESS}",
+            "https": f"{EMAIL_PROXY_ADDRESS}",
+        }
+        self.session.proxies.update(proxy)
+        try:
+            mail_list_response = self.session.get(
+                mail_list_url, timeout=10000
+            )  # 添加超时参数
+            mail_list_data = mail_list_response.json()
+            time.sleep(2)
+            if not mail_list_data.get("emails"):
+                return None, None
+        except requests.exceptions.Timeout:
+            error("获取邮件列表超时")
+            return None, None
+        except requests.exceptions.ConnectionError:
+            error("获取邮件列表连接错误")
+            return None, None
+        except Exception as e:
+            error(f"获取邮件列表发生错误: {str(e)}")
+            return None, None
+    
+        # 获取最新邮件的ID、
+        mail_detail_data_len = len(mail_list_data["emails"])
+        if mail_detail_data_len == 0:
+            return None, None
+        mail_list_data = mail_list_data["emails"][0]
+        # 获取最新邮件的ID
+        mail_id = mail_list_data.get("id")
+        if not mail_id:
+            return None, None
+        # 获取具体邮件内容
+        mail_detail_url = f"{EMAIL_API}/api/emails/{mail_id}"
+        returnData = ''
+        try:
+            mail_detail_response = self.session.get(
+                mail_detail_url, timeout=10
+            )  # 添加超时参数
+            returnData = mail_detail_response.json()
+            time.sleep(2)
+        except requests.exceptions.Timeout:
+            error("获取邮件详情超时")
+            return None, None
+        except requests.exceptions.ConnectionError:
+            error("获取邮件详情连接错误")
+            return None, None
+        except Exception as e:
+            error(f"获取邮件详情发生错误: {str(e)}")
+            return None, None
+    
+        # 从邮件文本中提取6位数字验证码\
+        mail_text = returnData.get("email")
+        mail_text = mail_text.get("textContent")
+        # 如果提供了source_email，确保邮件内容中包含该邮箱地址
+        if source_email and source_email.lower() not in mail_text.lower():
+            error(f"邮件内容不包含指定的邮箱地址: {source_email}")
+        else:
+            info(f"邮件内容包含指定的邮箱地址: {source_email}")
+    
+        code_match = re.search(r"(?<![a-zA-Z@.])\b\d{6}\b", mail_text)
+        info(f"验证码匹配结果: {code_match}")
+        # 如果找到验证码, 返回验证码和邮件ID
+        if code_match:
+            return code_match.group(), mail_id
+        else:
+            error("未找到验证码")
+            return None, None
 
 if __name__ == "__main__":
     email_handler = EmailVerificationHandler('x')

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Depends, Query, File, UploadFile
 from pydantic import BaseModel
 from typing import Optional, List
 from sqlalchemy import select, func, delete, desc
@@ -10,7 +10,7 @@ import uvicorn
 import asyncio
 import os
 import traceback
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from cursor_pro_keep_alive import main as register_account
 from browser_utils import BrowserManager
 from logger import info, error
@@ -28,6 +28,10 @@ from config import (
 )
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
+import sys
+import psutil
+import json
+import time
 
 # 全局状态追踪
 registration_status = {
@@ -985,6 +989,129 @@ async def delete_account_by_id(id: int, hard_delete: bool = False):
             detail=f"删除账号失败: {str(e)}",
         )
 
+# 添加导出账号列表功能
+@app.get("/accounts/export", tags=["Accounts"])
+async def export_accounts():
+    """导出所有账号为JSON文件"""
+    try:
+        async with get_session() as session:
+            query = select(AccountModel).order_by(desc(AccountModel.created_at))
+            result = await session.execute(query)
+            accounts = result.scalars().all()
+            
+            # 转换为可序列化的数据
+            accounts_data = []
+            for account in accounts:
+                account_dict = {
+                    "id": account.id,
+                    "email": account.email,
+                    "password": account.password,
+                    "token": account.token,
+                    "user": account.user,
+                    "usage_limit": account.usage_limit,
+                    "created_at": account.created_at,
+                    "status": account.status
+                }
+                accounts_data.append(account_dict)
+            
+            # 创建响应
+            content = json.dumps(accounts_data, ensure_ascii=False, indent=2)
+            response = Response(content=content)
+            response.headers["Content-Disposition"] = "attachment; filename=cursor_accounts.json"
+            response.headers["Content-Type"] = "application/json"
+            
+            return response
+            
+    except Exception as e:
+        error(f"导出账号失败: {str(e)}")
+        error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导出账号失败: {str(e)}",
+        )
+
+# 添加导入账号列表功能
+@app.post("/accounts/import", tags=["Accounts"])
+async def import_accounts(file: UploadFile):
+    """从JSON文件导入账号"""
+    try:
+        # 读取上传的文件内容
+        content = await file.read()
+        
+        # 解析JSON数据
+        try:
+            accounts_data = json.loads(content.decode("utf-8"))
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="无效的JSON文件格式",
+            )
+        
+        # 验证数据结构
+        if not isinstance(accounts_data, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="JSON数据必须是账号对象的数组",
+            )
+            
+        # 导入计数器
+        imported = 0
+        updated = 0
+        skipped = 0
+        
+        async with get_session() as session:
+            for account_data in accounts_data:
+                # 提取必要字段，提供默认值
+                email = account_data.get("email")
+                if not email:
+                    skipped += 1
+                    continue
+                    
+                # 检查账号是否已存在
+                query = select(AccountModel).where(AccountModel.email == email)
+                result = await session.execute(query)
+                existing_account = result.scalar_one_or_none()
+                
+                if existing_account:
+                    # 更新现有账号
+                    existing_account.password = account_data.get("password", existing_account.password)
+                    existing_account.token = account_data.get("token", existing_account.token)
+                    existing_account.user = account_data.get("user", existing_account.user)
+                    existing_account.usage_limit = account_data.get("usage_limit", existing_account.usage_limit)
+                    existing_account.status = account_data.get("status", existing_account.status)
+                    updated += 1
+                else:
+                    # 创建新账号
+                    new_account = AccountModel(
+                        id=account_data.get("id", int(time.time() * 1000)),
+                        email=email,
+                        password=account_data.get("password", ""),
+                        token=account_data.get("token", ""),
+                        user=account_data.get("user", ""),
+                        usage_limit=account_data.get("usage_limit", ""),
+                        created_at=account_data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                        status=account_data.get("status", "active")
+                    )
+                    session.add(new_account)
+                    imported += 1
+                    
+            # 提交所有更改
+            await session.commit()
+            
+        return {
+            "success": True,
+            "message": f"导入完成: 新增 {imported} 个账号, 更新 {updated} 个账号, 跳过 {skipped} 个无效记录",
+        }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        error(f"导入账号失败: {str(e)}")
+        error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导入账号失败: {str(e)}",
+        )
 
 # 添加"使用Token"功能
 @app.post("/account/use-token/{id}", tags=["Accounts"])
@@ -1034,6 +1161,28 @@ async def use_account_token(id: int):
         error(traceback.format_exc())
         return {"success": False, "message": f"使用Token失败: {str(e)}"}
 
+# 添加"重置设备id"功能
+@app.get("/reset-machine", tags=["System"])
+async def reset_machine():
+    """重置设备id"""
+    try:
+        # 重置Cursor的机器ID
+        from cursor_shadow_patcher import CursorShadowPatcher
+
+        resetter = CursorShadowPatcher()
+        patch_success = resetter.reset_machine_ids()
+        if patch_success:
+            return {
+                "success": True,
+                "message": f"成功重置了机器ID",
+            }
+        else:
+            return {"success": False, "message": "重置机器ID失败"}
+    except Exception as e:
+        error(f"重置机器ID失败: {str(e)}")
+        error(traceback.format_exc())
+        return {"success": False, "message": f"重置机器ID失败: {str(e)}"}
+
 
 # 添加配置相关模型
 class ConfigModel(BaseModel):
@@ -1046,6 +1195,13 @@ class ConfigModel(BaseModel):
     EMAIL_PIN: str
     BROWSER_PATH: Optional[str] = None
     CURSOR_PATH: Optional[str] = None
+    USE_PROXY: Optional[bool] = False
+    PROXY_TYPE: Optional[str] = None
+    PROXY_HOST: Optional[str] = None
+    PROXY_PORT: Optional[str] = None
+    PROXY_TIMEOUT: Optional[int] = None
+    PROXY_USERNAME: Optional[str] = None
+    PROXY_PASSWORD: Optional[str] = None
 
 
 # 获取配置端点
@@ -1060,14 +1216,27 @@ async def get_config():
             "BROWSER_HEADLESS": os.getenv("BROWSER_HEADLESS", "True").lower() == "true",
             "BROWSER_USER_AGENT": os.getenv("BROWSER_USER_AGENT", ""),
             "MAX_ACCOUNTS": int(os.getenv("MAX_ACCOUNTS", "10")),
+            "EMAIL_TYPE": os.getenv("EMAIL_TYPE", "tempemail"),
+            "EMAIL_PROXY_ENABLED": os.getenv("EMAIL_PROXY_ENABLED", "False").lower() == "true",
+            "EMAIL_PROXY_ADDRESS": os.getenv("EMAIL_PROXY_ADDRESS", ""),
+            "EMAIL_API": os.getenv("EMAIL_API", ""),
             "EMAIL_DOMAINS": os.getenv("EMAIL_DOMAINS", ""),
             "EMAIL_USERNAME": os.getenv("EMAIL_USERNAME", ""),
+            "EMAIL_DOMAIN": os.getenv("EMAIL_DOMAIN", ""),
             "EMAIL_PIN": os.getenv("EMAIL_PIN", ""),
             "BROWSER_PATH": os.getenv("BROWSER_PATH", ""),
             "CURSOR_PATH": os.getenv("CURSOR_PATH", ""),
-            "DYNAMIC_USERAGENT": os.getenv("DYNAMIC_USERAGENT", "False").lower() == "true"
+            "DYNAMIC_USERAGENT": os.getenv("DYNAMIC_USERAGENT", "False").lower() == "true",
+            # 添加代理配置
+            "USE_PROXY": os.getenv("USE_PROXY", "False"),
+            "PROXY_TYPE": os.getenv("PROXY_TYPE", "http"),
+            "PROXY_HOST": os.getenv("PROXY_HOST", ""),
+            "PROXY_PORT": os.getenv("PROXY_PORT", ""),
+            "PROXY_TIMEOUT": os.getenv("PROXY_TIMEOUT", "10"),
+            "PROXY_USERNAME": os.getenv("PROXY_USERNAME", ""),
+            "PROXY_PASSWORD": os.getenv("PROXY_PASSWORD", ""),
         }
-
+        
         return {"success": True, "data": config}
     except Exception as e:
         error(f"获取配置失败: {str(e)}")
@@ -1076,9 +1245,9 @@ async def get_config():
 
 
 # 更新配置端点
-@app.put("/config", tags=["Config"])
+@app.post("/config", tags=["Config"])
 async def update_config(config: ConfigModel):
-    """更新系统配置"""
+    """更新配置"""
     try:
         # 获取.env文件路径
         env_path = Path(__file__).parent / ".env"
@@ -1089,7 +1258,7 @@ async def update_config(config: ConfigModel):
             with open(env_path, "r", encoding="utf-8") as f:
                 current_lines = f.readlines()
 
-        # 构建配置字典
+        # 构建配置字典 - 修正：直接使用模型属性而非get方法
         config_dict = {
             "BROWSER_HEADLESS": str(config.BROWSER_HEADLESS),
             "DYNAMIC_USERAGENT": str(config.DYNAMIC_USERAGENT),
@@ -1098,6 +1267,14 @@ async def update_config(config: ConfigModel):
             "EMAIL_DOMAINS": config.EMAIL_DOMAINS,
             "EMAIL_USERNAME": config.EMAIL_USERNAME,
             "EMAIL_PIN": config.EMAIL_PIN,
+            # 添加代理配置
+            "USE_PROXY": str(config.USE_PROXY),
+            "PROXY_TYPE": config.PROXY_TYPE,
+            "PROXY_HOST": config.PROXY_HOST,
+            "PROXY_PORT": config.PROXY_PORT,
+            "PROXY_TIMEOUT": str(config.PROXY_TIMEOUT),
+            "PROXY_USERNAME": config.PROXY_USERNAME,
+            "PROXY_PASSWORD": config.PROXY_PASSWORD,
         }
 
         # 添加可选配置（如果提供）
@@ -1142,6 +1319,53 @@ async def update_config(config: ConfigModel):
         error(f"更新配置失败: {str(e)}")
         error(traceback.format_exc())
         return {"success": False, "message": f"更新配置失败: {str(e)}"}
+
+
+# 优化重启API功能，解决卡住问题
+@app.post("/restart", tags=["System"])
+async def restart_service():
+    """重启应用服务"""
+    try:
+        info("收到重启服务请求")
+        
+        # 使用更简单的重启方法 - 通过reload环境变量触发uvicorn重载
+        # 1. 修改.env文件，添加/更新一个时间戳，触发热重载
+        env_path = os.path.join(os.getcwd(), ".env")
+        timestamp = str(int(time.time()))
+        
+        # 读取现有.env文件
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                env_lines = f.read().splitlines()
+        else:
+            env_lines = []
+            
+        # 更新或添加RESTART_TIMESTAMP变量
+        timestamp_found = False
+        for i, line in enumerate(env_lines):
+            if line.startswith("RESTART_TIMESTAMP="):
+                env_lines[i] = f"RESTART_TIMESTAMP={timestamp}"
+                timestamp_found = True
+                break
+                
+        if not timestamp_found:
+            env_lines.append(f"RESTART_TIMESTAMP={timestamp}")
+            
+        # 写回.env文件
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(env_lines))
+            
+        info(f"已更新重启时间戳: {timestamp}")
+        
+        # 仅提示用户手动刷新页面
+        return {
+            "success": True, 
+            "message": "配置已更新，请手动刷新页面以应用更改。"
+        }
+    except Exception as e:
+        error(f"重启服务失败: {str(e)}")
+        error(traceback.format_exc())
+        return {"success": False, "message": f"重启服务失败: {str(e)}"}
 
 
 if __name__ == "__main__":

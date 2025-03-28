@@ -41,8 +41,6 @@ BROWSER_PATH = os.getenv("BROWSER_PATH", None)
 BROWSER_DOWNLOAD_PATH = os.getenv("BROWSER_DOWNLOAD_PATH", None)
 # 是否使用动态ua池
 DYNAMIC_USERAGENT = os.getenv("DYNAMIC_USERAGENT", "false").lower() == "true"
-# 浏览器代理
-BROWSER_PROXY = os.getenv("BROWSER_PROXY", None)
 # 浏览器User-Agent
 BROWSER_USER_AGENT = os.getenv("BROWSER_USER_AGENT", None)
 
@@ -55,6 +53,8 @@ SIGN_UP_URL = "https://authenticator.cursor.sh/sign-up"
 SETTINGS_URL = "https://www.cursor.com/settings"
 
 # ===== 邮箱配置 =====
+# 邮箱类型
+EMAIL_TYPE = os.getenv("EMAIL_TYPE", "tempemail")
 # 临时邮箱用户名
 EMAIL_USERNAME = os.getenv("EMAIL_USERNAME", "xxx")
 # 临时邮箱域名
@@ -65,6 +65,12 @@ EMAIL_PIN = os.getenv("EMAIL_PIN", "")
 EMAIL_DOMAINS = [
     domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",")
 ]
+# ZMail API地址
+EMAIL_API = os.getenv("EMAIL_API", "")
+# 是否启用邮箱API代理
+EMAIL_PROXY_ENABLED = os.getenv("EMAIL_PROXY_ENABLED", "false").lower() == "true"
+# 邮箱API代理地址
+EMAIL_PROXY_ADDRESS = os.getenv("EMAIL_PROXY_ADDRESS", "")
 # 邮件验证码获取最大重试次数
 EMAIL_VERIFICATION_RETRIES = int(os.getenv("EMAIL_VERIFICATION_RETRIES", 5))
 # 邮件验证码获取重试间隔(秒)
@@ -87,3 +93,19 @@ DATABASE_URL = os.getenv("DATABASE_URL", DATABASE_URL)
 # ===== Cursor main.js 配置 =====
 # Cursor 主文件路径
 CURSOR_PATH = os.getenv("CURSOR_PATH", None)
+
+# ===== 代理配置 =====
+# 是否启用代理
+USE_PROXY = os.getenv("USE_PROXY", "False").lower() == "true"
+# 代理类型
+PROXY_TYPE = os.getenv("PROXY_TYPE", "http")
+# 代理服务器地址
+PROXY_HOST = os.getenv("PROXY_HOST", "")
+# 代理服务器端口
+PROXY_PORT = os.getenv("PROXY_PORT", "")
+# 代理服务器用户名
+PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
+# 代理服务器密码
+PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
+# 代理服务器超时时间
+PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT", "10"))

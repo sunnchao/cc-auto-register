@@ -109,3 +109,9 @@ PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
 PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
 # 代理服务器超时时间
 PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT", "10"))
+
+# IMAP 配置
+EMAIL_IMAP_SERVER = os.getenv("EMAIL_IMAP_SERVER", "")
+EMAIL_IMAP_PORT = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+EMAIL_IMAP_DIR = os.getenv("EMAIL_IMAP_DIR", "")
+EMAIL_IMAP_PROTOCOL = os.getenv("EMAIL_IMAP_PROTOCOL", "IMAP")

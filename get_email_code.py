@@ -2,6 +2,12 @@ from logger import info, error
 import time
 import re
 import requests
+import imaplib
+import poplib
+import email
+from email.parser import Parser
+from datetime import datetime
+
 from config import (
     EMAIL_USERNAME,
     EMAIL_DOMAIN,
@@ -11,7 +17,11 @@ from config import (
     EMAIL_TYPE,
     EMAIL_PROXY_ADDRESS,
     EMAIL_PROXY_ENABLED,
-    EMAIL_API
+    EMAIL_API,
+    EMAIL_IMAP_SERVER,
+    EMAIL_IMAP_PORT,
+    EMAIL_IMAP_DIR,
+    EMAIL_IMAP_PROTOCOL,
 )
 
 
@@ -56,6 +66,8 @@ class EmailVerificationHandler:
                     code, mail_id = self.get_tempmail_email_code(source_email)
                 elif self.email == "zmail":
                     code, mail_id = self.get_zmail_email_code(source_email)
+                elif self.email == "imap":
+                    code, mail_id = self.get_imap_email_code(source_email)
                 if code:
                     info(f"成功获取验证码: {code}")
                     return code
@@ -273,3 +285,103 @@ class EmailVerificationHandler:
         else:
             error("未找到验证码")
             return None, None
+
+    # 获取 IMAP 的验证码
+    def get_imap_email_code(self, source_email = None):
+        # IMAP 配置
+        imap_server = EMAIL_IMAP_SERVER
+        imap_port = EMAIL_IMAP_PORT
+        imap_dir = EMAIL_IMAP_DIR
+        imap_protocol = EMAIL_IMAP_PROTOCOL
+
+        imap_user = ""
+        imap_pass = ""
+
+        if imap_protocol == "IMAP" :
+            verify_code, imap_id = self._get_mail_code_by_imap(imap_server, imap_port, imap_user, imap_pass, imap_dir)
+            return verify_code, imap_id
+        else:
+            return None, None
+
+
+
+    # 使用imap获取邮件
+    def _get_mail_code_by_imap(self, imap_server, imap_port, imap_user, imap_pass, imap_dir, retry = 0):
+        if retry > 0:
+            time.sleep(3)
+        if retry >= 20:
+            raise Exception("获取验证码超时")
+        try:
+            # 连接到IMAP服务器
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+            mail.login(imap_user, imap_pass)
+            search_by_date=False
+            # 针对网易系邮箱，imap登录后需要附带联系信息，且后续邮件搜索逻辑更改为获取当天的未读邮件
+            if imap_user.endswith(('@163.com', '@126.com', '@yeah.net')):
+                imap_id = ("name", imap_user.split('@')[0], "contact", imap_user, "version", "1.0.0", "vendor", "imaplib")
+                mail.xatom('ID', '("' + '" "'.join(imap_id) + '")')
+                search_by_date=True
+            mail.select(imap_dir)
+            if search_by_date:
+                date = datetime.now().strftime("%d-%b-%Y")
+                status, messages = mail.search(None, f'ON {date} UNSEEN')
+            else:
+                status, messages = mail.search(None, 'ALL')
+            if status != 'OK':
+                return None
+
+            mail_ids = messages[0].split()
+            if not mail_ids:
+                # 没有获取到，就在获取一次
+                return self._get_mail_code_by_imap(retry=retry + 1)
+
+            for mail_id in reversed(mail_ids):
+                status, msg_data = mail.fetch(mail_id, '(RFC822)')
+                if status != 'OK':
+                    continue
+                raw_email = msg_data[0][1]
+                email_message = email.message_from_bytes(raw_email)
+
+                # 如果是按日期搜索的邮件，需要进一步核对收件人地址是否对应
+                if search_by_date and email_message['to'] !=self.account:
+                    continue
+                body = self._extract_imap_body(email_message)
+                if body:
+                    code_match = re.search(r"\b\d{6}\b", body)
+                    if code_match:
+                        code = code_match.group()
+                        # 删除找到验证码的邮件
+                        mail.store(mail_id, '+FLAGS', '\\Deleted')
+                        mail.expunge()
+                        mail.logout()
+                        return code, imap_id
+            # print("未找到验证码")
+            mail.logout()
+            return None
+        except Exception as e:
+            print(f"发生错误: {e}")
+            return None
+
+    def _extract_imap_body(self, email_message):
+        # 提取邮件正文
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition"))
+                if content_type == "text/plain" and "attachment" not in content_disposition:
+                    charset = part.get_content_charset() or 'utf-8'
+                    try:
+                        body = part.get_payload(decode=True).decode(charset, errors='ignore')
+                        return body
+                    except Exception as e:
+                        error(f"解码邮件正文失败: {e}")
+        else:
+            content_type = email_message.get_content_type()
+            if content_type == "text/plain":
+                charset = email_message.get_content_charset() or 'utf-8'
+                try:
+                    body = email_message.get_payload(decode=True).decode(charset, errors='ignore')
+                    return body
+                except Exception as e:
+                    error(f"解码邮件正文失败: {e}")
+        return ""

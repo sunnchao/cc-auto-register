@@ -52,3 +52,6 @@ temp/
 *.pem
 *.key
 credentials.json
+.env
+accounts.db
+.conda
